@@ -11,6 +11,20 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
+#define USARTBUFFSIZE 1025
+
+typedef struct {
+	uint16_t in;
+	uint16_t out;
+	uint16_t count;
+	uint8_t buff[USARTBUFFSIZE];
+} FIFO_TypeDef;
+
+//initialize buffers
+volatile FIFO_TypeDef U1RX, U1TX;
+volatile FIFO_TypeDef U2RX, U2TX;
+volatile FIFO_TypeDef U3RX, U3TX;
+
 void putChar1(int c);
 void putChar2(int c);
 void putChar3(int c);
@@ -23,6 +37,17 @@ void pushch3(uint8_t rx);
 bool isAvailable1(char *buffer);
 bool isAvailable2(char *buffer);
 bool isAvailable3(char *buffer);
+void Usart1PutStr(char *s);
+void Usart2PutStr(char *s);
+void Usart3PutStr(char *s);
+void Usart1Put(uint8_t ch);
+void Usart2Put(uint8_t ch);
+void Usart3Put(uint8_t ch);
+
+void BufferInit(__IO FIFO_TypeDef *buffer);
+ErrorStatus BufferPut(__IO FIFO_TypeDef *buffer, uint8_t ch);
+ErrorStatus BufferGet(__IO FIFO_TypeDef *buffer, uint8_t *ch);
+ErrorStatus BufferIsEmpty(__IO FIFO_TypeDef buffer);
 
 //extern "C" int fputc(int ch, FILE *f)
 //{
@@ -281,6 +306,7 @@ void NM_NVIC_init()
 int main(void)
 {
 	char data[] = "Hello World";
+	char test[] = "Hello World, The quick brown fox jumps over the lazy dog.";
 	SystemInit();
 //	SystemCoreClockUpdate();
 //	SysTick_Config(SystemCoreClock / 1000); //Set up a systick interrupt 
@@ -290,6 +316,7 @@ int main(void)
 	NM_GPIO_Configuration();
 	NM_USART_Configuration();
 	printStr2(data);
+	Usart2PutStr(test);
 	while (1)
 	{
 		char str[] = "Welcome to wherever you are\r\n";
@@ -376,71 +403,63 @@ extern "C" void USART1_IRQHandler(void)
 
 extern "C" void USART2_IRQHandler(void)
 {
-	uint8_t rx;
-	uint16_t d = USART_GetITStatus(USART2, USART_IT_RXNE);
+	uint8_t ch;
 	/* RXNE handler */
 	if (USART_GetITStatus(USART2, USART_IT_RXNE) != RESET)
 	{
-		rx =  USART_ReceiveData(USART2);
-		pushch2(rx);
+		ch =  USART_ReceiveData(USART2);
+		pushch2(ch);
 		USART_ClearITPendingBit(USART2, USART_IT_RXNE);
 	}
 	if (USART_GetITStatus(USART2, USART_IT_TXE) != RESET)
-	//{
-		//if (txring[USART2Serial]->count == 0)
+	{
+		if (BufferGet(&U2TX, &ch) == SUCCESS)//if buffer read
 		{
-			USART_ITConfig(USART2, USART_IT_TXE, DISABLE);
-			USART_ClearITPendingBit(USART2, USART_IT_TXE );
+			USART_SendData(USART2, ch);
 		}
-//	else {
-			//USART_SendData(USART3, ring_deque(txring[USART2Serial]));
-		//}
-	//}
+		else//if buffer empty
+		{
+			//disable Transmit Data Register empty interrupt
+			USART_ITConfig(USART2, USART_IT_TXE, DISABLE);
+			USART_ClearITPendingBit(USART2, USART_IT_TXE);
+		}
+	}
 	if (USART_GetFlagStatus(USART2, USART_FLAG_ORE) != RESET)
 	{
-		rx = USART_ReceiveData(USART2);
+		ch = USART_ReceiveData(USART2);
 		USART_ClearITPendingBit(USART2, USART_IT_ORE);
 	}
 }
 
 extern "C" void USART3_IRQHandler(void)
 {
+	uint8_t ch;
 	/* RXNE handler */
 	if (USART_GetITStatus(USART3, USART_IT_RXNE) != RESET)
 	{
-		uint8_t rx =  USART_ReceiveData(USART3);
-		pushch3(rx);
+		ch =  USART_ReceiveData(USART3);
+		pushch3(ch);
+		USART_ClearITPendingBit(USART2, USART_IT_RXNE);
 	}
-//	if (USART_GetITStatus(USART3, USART_IT_TXE) != RESET)
-	//{
-		//if (txring[USART2Serial]->count == 0)
-		//{
-			//USART_ITConfig(USART3, USART_IT_TXE, (FunctionalState) DISABLE);
-			//USART_ClearITPendingBit(USART3, USART_IT_TXE );
-		//} else {
-			//USART_SendData(USART3, ring_deque(txring[USART2Serial]));
-		//}
-	//}
+	if (USART_GetITStatus(USART3, USART_IT_TXE) != RESET)
+	{
+		if (BufferGet(&U3TX, &ch) == SUCCESS)//if buffer read
+		{
+			USART_SendData(USART3, ch);
+		}
+		else//if buffer empty
+		{
+		   //disable Transmit Data Register empty interrupt
+			USART_ITConfig(USART3, USART_IT_TXE, DISABLE);
+			USART_ClearITPendingBit(USART2, USART_IT_TXE);
+		}
+	}
+	if (USART_GetFlagStatus(USART3, USART_FLAG_ORE) != RESET)
+	{
+		ch = USART_ReceiveData(USART3);
+		USART_ClearITPendingBit(USART3, USART_IT_ORE);
+	}
 }
-
-#define RXSIZE 1024
- 
-uint8_t RxBuffer1[RXSIZE];
-//fifo_t RxFifo1[1];
-uint8_t RxBuffer2[RXSIZE];
-//fifo_t RxFifo2[1];
-uint8_t RxBuffer3[RXSIZE];
-//fifo_t RxFifo3[1];
- 
-
-#define TXSIZE 512
- 
-uint8_t TxBuffer1[TXSIZE];
-//fifo_t TxFifo1[1];
-uint8_t TxBuffer2[TXSIZE];
-//fifo_t TxFifo2[1];
-uint8_t TxBuffer3[TXSIZE];
-//fifo_t TxFifo3[1];
 
 #define LINEMAX 255 // Maximal allowed/expected line length
  
@@ -566,6 +585,77 @@ bool isAvailable3(char buffer[])
 	}
 	else
 		return false;
+}
+
+void BufferInit(__IO FIFO_TypeDef *buffer)
+{
+	buffer->count = 0;//0 bytes in buffer
+	buffer->in = 0;//index points to start
+	buffer->out = 0;//index points to start
+}
+
+ErrorStatus BufferPut(__IO FIFO_TypeDef *buffer, uint8_t ch)
+{
+	if (buffer->count == USARTBUFFSIZE)
+		return ERROR;//buffer full
+	buffer->buff[buffer->in++] = ch;
+	buffer->count++;
+	if (buffer->in == USARTBUFFSIZE)
+		buffer->in = 0;//start from beginning
+	return SUCCESS;
+}
+
+ErrorStatus BufferGet(__IO FIFO_TypeDef *buffer, uint8_t *ch)
+{
+	if (buffer->count == 0)
+		return ERROR;//buffer empty
+	*ch = buffer->buff[buffer->out++];
+	buffer->count--;
+	if (buffer->out == USARTBUFFSIZE)
+		buffer->out = 0;//start from beginning
+	return SUCCESS;
+}
+
+ErrorStatus BufferIsEmpty(__IO FIFO_TypeDef buffer)
+{
+	if (buffer.count == 0)
+		return SUCCESS;//buffer full
+	return ERROR;
+}
+
+void Usart1Put(uint8_t ch)
+{
+    //put char to the buffer
+	BufferPut(&U1TX, ch);
+	//enable Transmit Data Register empty interrupt
+	USART_ITConfig(USART1, USART_IT_TXE, ENABLE);
+}
+
+void Usart2Put(uint8_t ch)
+{
+    //put char to the buffer
+	BufferPut(&U2TX, ch);
+	//enable Transmit Data Register empty interrupt
+	USART_ITConfig(USART2, USART_IT_TXE, ENABLE);
+}
+
+void Usart3Put(uint8_t ch)
+{
+    //put char to the buffer
+	BufferPut(&U3TX, ch);
+	//enable Transmit Data Register empty interrupt
+	USART_ITConfig(USART3, USART_IT_TXE, ENABLE);
+}
+
+void Usart2PutStr(char *s)
+{
+	int i;
+	i = 0;
+	while ((*s) && (i < 255))
+	{
+		Usart2Put((u16)*s++);
+		i++;
+	}
 }
 
 volatile uint32_t Milliseconds = 0;
