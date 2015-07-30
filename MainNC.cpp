@@ -10,6 +10,7 @@
 #include <stdarg.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <ADCF3.h>
 
 #define USARTBUFFSIZE 1025
 
@@ -18,13 +19,24 @@ typedef struct {
 	uint16_t out;
 	uint16_t count;
 	uint8_t buff[USARTBUFFSIZE];
-} FIFO_TypeDef;
+} FIFO_Tra_TypeDef;
+
+typedef struct {
+	uint16_t in;
+	uint16_t out;
+	uint16_t count;
+	uint8_t buff[USARTBUFFSIZE];
+} FIFO_Rec_TypeDef;
 
 //initialize buffers
-volatile FIFO_TypeDef U1RX, U1TX;
-volatile FIFO_TypeDef U2RX, U2TX;
-volatile FIFO_TypeDef U3RX, U3TX;
+volatile FIFO_Tra_TypeDef U1TX;
+volatile FIFO_Tra_TypeDef U2TX;
+volatile FIFO_Tra_TypeDef U3TX;
+volatile FIFO_Rec_TypeDef U1RX;
+volatile FIFO_Rec_TypeDef U2RX;
+volatile FIFO_Rec_TypeDef U3RX;
 
+void initBuffers(void);
 void putChar1(int c);
 void putChar2(int c);
 void putChar3(int c);
@@ -44,10 +56,14 @@ void Usart1Put(uint8_t ch);
 void Usart2Put(uint8_t ch);
 void Usart3Put(uint8_t ch);
 
-void BufferInit(__IO FIFO_TypeDef *buffer);
-ErrorStatus BufferPut(__IO FIFO_TypeDef *buffer, uint8_t ch);
-ErrorStatus BufferGet(__IO FIFO_TypeDef *buffer, uint8_t *ch);
-ErrorStatus BufferIsEmpty(__IO FIFO_TypeDef buffer);
+void BufferTra_Init(__IO FIFO_Tra_TypeDef *buffer);
+void BufferRec_Init(__IO FIFO_Rec_TypeDef *buffer);
+ErrorStatus BufferRec_Put(__IO FIFO_Rec_TypeDef *buffer, uint8_t ch);
+ErrorStatus BufferRec_Get(__IO FIFO_Rec_TypeDef *buffer, uint8_t *ch);
+ErrorStatus BufferTra_Put(__IO FIFO_Tra_TypeDef *buffer, uint8_t ch);
+ErrorStatus BufferTra_Get(__IO FIFO_Tra_TypeDef *buffer, uint8_t *ch);
+ErrorStatus BufferRec_IsEmpty(__IO FIFO_Rec_TypeDef buffer);
+ErrorStatus BufferTra_IsEmpty(__IO FIFO_Tra_TypeDef buffer);
 
 //extern "C" int fputc(int ch, FILE *f)
 //{
@@ -164,8 +180,8 @@ void NM_GPIO_Configuration(void)
 //	GPIO_PinAFConfig(GPIOA, GPIO_PinSource10, GPIO_AF_7);
 	GPIO_PinAFConfig(GPIOA, GPIO_PinSource2, GPIO_AF_7);	// USART2
 	GPIO_PinAFConfig(GPIOA, GPIO_PinSource3, GPIO_AF_7);
-//	GPIO_PinAFConfig(GPIOB, GPIO_PinSource10, GPIO_AF_7);	// USART3
-//	GPIO_PinAFConfig(GPIOB, GPIO_PinSource11, GPIO_AF_7);
+	GPIO_PinAFConfig(GPIOB, GPIO_PinSource10, GPIO_AF_7);	// USART3
+	GPIO_PinAFConfig(GPIOB, GPIO_PinSource11, GPIO_AF_7);
 
 	/* Configure USART Tx as alternate function push-pull */
 	//GPIO_InitStructure.GPIO_Pin = GPIO_Pin_9;  // PA.9 USART1.TX
@@ -294,11 +310,11 @@ void NM_NVIC_init()
 	NVIC_InitStructure.NVIC_IRQChannelSubPriority = 0;
 	NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
 	NVIC_Init(&NVIC_InitStructure);
-//	NVIC_InitStructure.NVIC_IRQChannel = USART3_IRQn;
-//	NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 0;
-//	NVIC_InitStructure.NVIC_IRQChannelSubPriority = 0;
-//	NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
-//	NVIC_Init(&NVIC_InitStructure);
+	NVIC_InitStructure.NVIC_IRQChannel = USART3_IRQn;
+	NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 0;
+	NVIC_InitStructure.NVIC_IRQChannelSubPriority = 0;
+	NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
+	NVIC_Init(&NVIC_InitStructure);
 }
 
 /**************************************************************************************/
@@ -310,13 +326,23 @@ int main(void)
 	SystemInit();
 //	SystemCoreClockUpdate();
 //	SysTick_Config(SystemCoreClock / 1000); //Set up a systick interrupt 
-	
+	initBuffers();
 	NM_RCC_Configuration();
 	NM_NVIC_init();
 	NM_GPIO_Configuration();
 	NM_USART_Configuration();
 	printStr2(data);
 	Usart2PutStr(test);
+	ADC1_config();
+	uint16_t temp = readTemp();
+	uint16_t vBat = readVBat();
+	uint16_t vRef = readintRef();
+	uint16_t vInput = readVinput();
+	printf("temp %03d\r\n", temp);
+	printf("vBat %03d\r\n", vBat);
+	printf("vRef %03d\r\n", vRef);
+	printf("vInput %03d\r\n", vInput);
+
 	while (1)
 	{
 		char str[] = "Welcome to wherever you are\r\n";
@@ -413,7 +439,7 @@ extern "C" void USART2_IRQHandler(void)
 	}
 	if (USART_GetITStatus(USART2, USART_IT_TXE) != RESET)
 	{
-		if (BufferGet(&U2TX, &ch) == SUCCESS)//if buffer read
+		if (BufferTra_Get(&U2TX, &ch) == SUCCESS)//if buffer read
 		{
 			USART_SendData(USART2, ch);
 		}
@@ -443,7 +469,7 @@ extern "C" void USART3_IRQHandler(void)
 	}
 	if (USART_GetITStatus(USART3, USART_IT_TXE) != RESET)
 	{
-		if (BufferGet(&U3TX, &ch) == SUCCESS)//if buffer read
+		if (BufferTra_Get(&U3TX, &ch) == SUCCESS)//if buffer read
 		{
 			USART_SendData(USART3, ch);
 		}
@@ -526,6 +552,7 @@ void pushch3(uint8_t rx)
 	{
 		if (rx_index3 != 0) // Line has some content?
 		{
+			BufferRec_Put(&U3RX, rx);
 			memcpy((void *)line_buffer3, rx_buffer3, rx_index3); // Copy to static line buffer from dynamic receive buffer
 			line_buffer3[rx_index3] = 0; // Add terminating NUL
 			line_valid3++; // flag new line valid for processing
@@ -587,25 +614,32 @@ bool isAvailable3(char buffer[])
 		return false;
 }
 
-void BufferInit(__IO FIFO_TypeDef *buffer)
+
+void BufferRec_Init(__IO FIFO_Tra_TypeDef *buffer)
 {
 	buffer->count = 0;//0 bytes in buffer
 	buffer->in = 0;//index points to start
 	buffer->out = 0;//index points to start
 }
 
-ErrorStatus BufferPut(__IO FIFO_TypeDef *buffer, uint8_t ch)
+void BufferTra_Init(__IO FIFO_Rec_TypeDef *buffer)
 {
-	if (buffer->count == USARTBUFFSIZE)
-		return ERROR;//buffer full
-	buffer->buff[buffer->in++] = ch;
-	buffer->count++;
-	if (buffer->in == USARTBUFFSIZE)
-		buffer->in = 0;//start from beginning
-	return SUCCESS;
+	buffer->count = 0;//0 bytes in buffer
+	buffer->in = 0;//index points to start
+	buffer->out = 0;//index points to start
 }
 
-ErrorStatus BufferGet(__IO FIFO_TypeDef *buffer, uint8_t *ch)
+void initBuffers()
+{
+	BufferRec_Init(&U1TX);
+	BufferTra_Init(&U1RX);
+	BufferRec_Init(&U2TX);
+	BufferTra_Init(&U2RX);
+	BufferRec_Init(&U3TX);
+	BufferTra_Init(&U3RX);
+}
+
+ErrorStatus BufferRec_Get(__IO FIFO_Rec_TypeDef *buffer, uint8_t *ch)
 {
 	if (buffer->count == 0)
 		return ERROR;//buffer empty
@@ -616,7 +650,61 @@ ErrorStatus BufferGet(__IO FIFO_TypeDef *buffer, uint8_t *ch)
 	return SUCCESS;
 }
 
-ErrorStatus BufferIsEmpty(__IO FIFO_TypeDef buffer)
+ErrorStatus BufferRec_Put(__IO FIFO_Rec_TypeDef *buffer, uint8_t ch)
+{
+	if (buffer->count == USARTBUFFSIZE)
+		return ERROR;//buffer full
+	buffer->buff[buffer->in++] = ch;
+	buffer->count++;
+	if (buffer->in == USARTBUFFSIZE)
+		buffer->in = 0;//start from beginning
+	return SUCCESS;
+}
+
+ErrorStatus BufferTra_Get(__IO FIFO_Tra_TypeDef *buffer, uint8_t *ch)
+{
+	if (buffer->count == 0)
+		return ERROR;//buffer empty
+	*ch = buffer->buff[buffer->out++];
+	buffer->count--;
+	if (buffer->out == USARTBUFFSIZE)
+		buffer->out = 0;//start from beginning
+	return SUCCESS;
+}
+
+ErrorStatus BufferTra_Put(__IO FIFO_Tra_TypeDef *buffer, uint8_t ch)
+{
+	if (buffer->count == USARTBUFFSIZE)
+		return ERROR;//buffer full
+	buffer->buff[buffer->in++] = ch;
+	buffer->count++;
+	if (buffer->in == USARTBUFFSIZE)
+		buffer->in = 0;//start from beginning
+	return SUCCESS;
+}
+void pushch4(uint8_t rx)
+{
+	if ((rx == '\r') || (rx == '\n')) // Is this an end-of-line condition, either will suffice?
+	{
+		if (rx_index3 != 0) // Line has some content?
+		{
+			memcpy((void *)line_buffer3, rx_buffer3, rx_index3); // Copy to static line buffer from dynamic receive buffer
+			line_buffer3[rx_index3] = 0; // Add terminating NUL
+			line_valid3++; // flag new line valid for processing
+			rx_index3 = 0; // Reset content pointer
+			memset(rx_buffer3, 0, sizeof(rx_buffer3)); // Clear buffer
+		}
+	}
+	else
+	{
+		if (rx_index3 == LINEMAX) // If overflows pull back to start
+			rx_index3 = 0;
+		rx_buffer3[rx_index3++] = rx; // Copy to buffer and increment
+	}
+	return;
+}
+
+ErrorStatus Buffer_IsEmpty(__IO FIFO_Rec_TypeDef buffer)
 {
 	if (buffer.count == 0)
 		return SUCCESS;//buffer full
@@ -626,7 +714,7 @@ ErrorStatus BufferIsEmpty(__IO FIFO_TypeDef buffer)
 void Usart1Put(uint8_t ch)
 {
     //put char to the buffer
-	BufferPut(&U1TX, ch);
+	BufferTra_Put(&U1TX, ch);
 	//enable Transmit Data Register empty interrupt
 	USART_ITConfig(USART1, USART_IT_TXE, ENABLE);
 }
@@ -634,7 +722,7 @@ void Usart1Put(uint8_t ch)
 void Usart2Put(uint8_t ch)
 {
     //put char to the buffer
-	BufferPut(&U2TX, ch);
+	BufferTra_Put(&U2TX, ch);
 	//enable Transmit Data Register empty interrupt
 	USART_ITConfig(USART2, USART_IT_TXE, ENABLE);
 }
@@ -642,7 +730,7 @@ void Usart2Put(uint8_t ch)
 void Usart3Put(uint8_t ch)
 {
     //put char to the buffer
-	BufferPut(&U3TX, ch);
+	BufferTra_Put(&U3TX, ch);
 	//enable Transmit Data Register empty interrupt
 	USART_ITConfig(USART3, USART_IT_TXE, ENABLE);
 }
